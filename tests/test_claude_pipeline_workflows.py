@@ -135,7 +135,7 @@ def test_the_api_key_is_never_named_anywhere():
     forbidden = ("anthropic" + "_api_key").lower()
     offenders = []
     for path in REPO_ROOT.rglob("*"):
-        if ".git" in path.parts or not path.is_file():
+        if ".git" in path.parts or "__pycache__" in path.parts or path.suffix == ".pyc" or not path.is_file():
             continue
         try:
             text = path.read_text(errors="ignore").lower()

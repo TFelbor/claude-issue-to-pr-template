@@ -92,6 +92,23 @@ def _is_bot(login: str) -> bool:
     return login.lower().removeprefix("app/").removesuffix("[bot]") in BOT_LOGINS
 
 
+def is_pipeline_draft(pr: dict) -> bool:
+    """A draft this pipeline opened, and nobody else.
+
+    The body markers alone are not proof: anyone can paste them into a pull request,
+    including one from a fork, and a match here dispatches a run with a write token.
+    So the pull request must also come from a branch in this repository and be authored
+    by the pipeline's own identity.
+    """
+    body = pr.get("body") or ""
+    return bool(
+        pr.get("isDraft")
+        and not pr.get("isCrossRepository", True)
+        and _is_bot(((pr.get("author") or {}).get("login")) or "")
+        and (SAFETY_NET_MARKER in body or DRAFT_FIRST_MARKER in body)
+    )
+
+
 def decide(
     pr: dict[str, Any],
     comments: list[dict[str, Any]],
@@ -167,7 +184,7 @@ def main() -> int:
 
     try:
         prs = json.loads(_gh("pr", "list", "--state", "open", "--limit", "100",
-                             "--json", "number,isDraft,body,headRefName,createdAt"))
+                             "--json", "number,isDraft,body,headRefName,createdAt,isCrossRepository,author"))
     except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         # Red, not green. A scheduled run that cannot see the drafts it exists to pick up
         # has done nothing, and a green tick on it means the first sign of trouble is
@@ -176,12 +193,7 @@ def main() -> int:
         print(f"claude-resume: could not list pull requests: {exc}", file=sys.stderr)
         return 1
 
-    candidates = [
-        p
-        for p in prs
-        if p.get("isDraft")
-        and (SAFETY_NET_MARKER in (p.get("body") or "") or DRAFT_FIRST_MARKER in (p.get("body") or ""))
-    ]
+    candidates = [p for p in prs if is_pipeline_draft(p)]
     print(f"claude-resume: {len(prs)} open pull request(s), {len(candidates)} unfinished pipeline draft(s)")
     for pr in candidates:
         number = pr["number"]

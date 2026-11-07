@@ -177,3 +177,16 @@ def test_a_recent_attempt_is_given_time_to_finish():
     comments = [_resume_comment(1, NOW - timedelta(minutes=40))]
     d = resume.decide(_pr(), comments, NOW, min_gap=timedelta(hours=2))
     assert d.action == "skip" and "40 minutes" in d.reason
+
+
+def test_only_same_repository_drafts_by_the_pipeline_are_candidates():
+    """Markers can be pasted by anyone; a fork or a person's draft must never dispatch a run."""
+    DRAFT_FIRST_MARKER, is_pipeline_draft = resume.DRAFT_FIRST_MARKER, resume.is_pipeline_draft
+
+    ours = {"isDraft": True, "isCrossRepository": False, "author": {"login": "app/claude"},
+            "body": DRAFT_FIRST_MARKER}
+    assert is_pipeline_draft(ours)
+    assert not is_pipeline_draft({**ours, "isCrossRepository": True})
+    assert not is_pipeline_draft({**ours, "author": {"login": "some-human"}})
+    assert not is_pipeline_draft({**ours, "isDraft": False})
+    assert not is_pipeline_draft({k: v for k, v in ours.items() if k != "isCrossRepository"})

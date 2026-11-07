@@ -127,14 +127,18 @@ jobs:
             # pull request. `.github/` is on the list for a second reason: claude-review
             # passes green *without reviewing* a pull request that edits workflows.
             git fetch --quiet origin "pull/${pr}/head:automerge-pr-${pr}"
-            base=$(git merge-base "origin/${DEFAULT_BRANCH}" "automerge-pr-${pr}")
+            # Inspect exactly the commit `--match-head-commit` will merge, not whatever the
+            # ref points at by now.
+            [ "$(git rev-parse "automerge-pr-${pr}")" = "$head_sha" ] || { decline "$pr" "head moved while checking"; continue; }
+            base=$(git merge-base "origin/${DEFAULT_BRANCH}" "$head_sha")
             hit=""
             while IFS= read -r file; do
               [ -n "$file" ] || continue
               for prefix in $PROTECTED_PATHS; do
                 case "$file" in "$prefix"*) hit="${hit}${file} " ;; esac
               done
-            done < <(git diff --name-only "$base" "automerge-pr-${pr}")
+            # --no-renames: a rename out of a protected path must list the old path too.
+            done < <(git diff --no-renames --name-only "$base" "$head_sha")
             if [ -n "$hit" ]; then decline "$pr" "changes a protected path: ${hit}"; continue; fi
 
             echo "PR #${pr} passes every gate at ${head_sha}; squash-merging."

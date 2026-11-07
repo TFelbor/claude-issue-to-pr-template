@@ -269,7 +269,9 @@ implement_mode() {
   push_branch || true
 
   local prs pr_number pr_title
-  prs=$(gh pr list --head "$BRANCH" --state open --json number,url,isDraft,body,title) || prs="[]"
+  prs=$(gh pr list --head "$BRANCH" --state open --json number,url,isDraft,body,title,isCrossRepository) || prs="[]"
+  # Same-named branches on forks are somebody else's pull requests, never ours to promote.
+  prs=$(printf '%s' "$prs" | jq '[.[] | select(.isCrossRepository | not)]' 2>/dev/null) || prs="[]"
   pr_number=$(printf '%s' "$prs" | jq -r '.[0].number // empty' 2>/dev/null) || pr_number=""
   pr_title=$(printf '%s' "$prs" | jq -r '.[0].title // empty' 2>/dev/null) || pr_title=""
   # Either of the pipeline's own markers: the draft this script opened after an earlier
