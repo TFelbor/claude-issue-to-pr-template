@@ -1,0 +1,144 @@
+# Tier 4 of the Claude Code pipeline: auto-merge, off by default.
+#
+# There is no Claude call in this file. Everything below is `gh` and `git`, because
+# "may this merge?" is a question with a definite answer, and a model asked to decide
+# it would sometimes answer differently for the same inputs.
+#
+# The gate is the repository variable AUTO_MERGE. Until somebody sets it to `on`, this
+# workflow evaluates its trigger and stops: an unset variable is off. Turning it on is
+# a decision about how much the pipeline is trusted, so it is deliberately not a line
+# in this file that a pull request could change. Every trigger below runs this file
+# from the default branch, so a pull request cannot loosen its own gate either.
+#
+# Keep a human merge until you have watched the pipeline for a while. See
+# docs/PIPELINE.md § The auto-merge gate.
+name: claude-automerge
+
+on:
+  # The usual route: the review check finished. `check_suite` does not fire for suites
+  # GitHub Actions created, so on a repository whose checks are all Actions it is
+  # `workflow_run` that arrives.
+  workflow_run:
+    workflows: [claude-review]
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+  check_suite:
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+# Two triggers can arrive for one pull request within seconds; merge decisions are
+# taken one at a time.
+concurrency:
+  group: claude-automerge
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    name: automerge
+    if: vars.AUTO_MERGE == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate the gate and merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REVIEW_PR: ${{ github.event.pull_request.number }}
+          SUITE_PRS: ${{ toJSON(github.event.check_suite.pull_requests) }}
+          RUN_PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Every spelling `gh` uses for the Claude app; same set as claude-review.yml.
+          CLAUDE_LOGINS: "claude claude[bot] app/claude claude-code claude-code[bot] app/claude-code"
+          # Path prefixes a merge without a human may never touch: the pipeline's own
+          # control surface by default. Extend with the repository variable
+          # AUTOMERGE_PROTECTED_PATHS (space-separated prefixes), e.g. your migrations.
+          PROTECTED_PATHS: ".github/ .claude/ CLAUDE.md ${{ vars.AUTOMERGE_PROTECTED_PATHS }}"
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request_review) prs="$REVIEW_PR" ;;
+            workflow_run) prs=$(printf '%s' "$RUN_PRS" | jq -r '(. // []) | .[].number' | tr '\n' ' ') ;;
+            *) prs=$(printf '%s' "$SUITE_PRS" | jq -r '(. // []) | .[].number' | tr '\n' ' ') ;;
+          esac
+
+          if [ -z "${prs// /}" ]; then
+            echo "No pull request attached to this event; nothing to consider."
+            exit 0
+          fi
+
+          decline() { echo "PR #$1 not merged: $2"; }
+
+          for pr in $prs; do
+            meta=$(gh pr view "$pr" --json number,state,isDraft,author,labels,headRefName,headRefOid,mergeable,isCrossRepository)
+
+            [ "$(printf '%s' "$meta" | jq -r '.state')" = "OPEN" ] || { decline "$pr" "not open"; continue; }
+            [ "$(printf '%s' "$meta" | jq -r '.isDraft')" = "false" ] || { decline "$pr" "draft"; continue; }
+            [ "$(printf '%s' "$meta" | jq -r '.isCrossRepository')" = "false" ] || { decline "$pr" "from a fork"; continue; }
+
+            author=$(printf '%s' "$meta" | jq -r '.author.login')
+            # Strip `app/` and `[bot]` before comparing; neither character is legal in
+            # a human login, so this cannot admit a person.
+            author_norm=$(printf '%s' "$author" | sed -E 's#^app/##; s#\[bot\]$##')
+            case " $CLAUDE_LOGINS " in
+              *" $author_norm "*) : ;;
+              *) decline "$pr" "author is ${author}, not the Claude app"; continue ;;
+            esac
+
+            labels=$(printf '%s' "$meta" | jq -r '.labels[].name' | tr '\n' ' ')
+            case " $labels " in *" risk:auto "*) : ;; *) decline "$pr" "no risk:auto label"; continue ;; esac
+            case " $labels " in *" do-not-merge "*) decline "$pr" "carries do-not-merge"; continue ;; esac
+
+            [ "$(printf '%s' "$meta" | jq -r '.mergeable')" = "MERGEABLE" ] || { decline "$pr" "not mergeable"; continue; }
+
+            head_sha=$(printf '%s' "$meta" | jq -r '.headRefOid')
+
+            # Every check that ran on the head commit must be green. SKIPPED and
+            # NEUTRAL count as green; QUEUED, IN_PROGRESS and anything failing do not,
+            # so a suite still running declines rather than racing.
+            rollup=$(gh pr view "$pr" --json statusCheckRollup --jq '.statusCheckRollup')
+            not_green=$(printf '%s' "$rollup" | jq -r '
+              [ .[]
+                | select(
+                    (.__typename == "CheckRun" and ((.conclusion // "PENDING") | IN("SUCCESS","SKIPPED","NEUTRAL") | not))
+                    or (.__typename == "StatusContext" and ((.state // "PENDING") != "SUCCESS"))
+                  )
+                | (.name // .context // "check")
+              ] | join(", ")')
+            if [ -n "$not_green" ]; then decline "$pr" "checks not green: ${not_green}"; continue; fi
+
+            # `claude-review` specifically. No claude-review entry is a pull request the
+            # reviewer never saw, which is not the same as approval.
+            review_state=$(printf '%s' "$rollup" \
+              | jq -r '[.[] | select((.name // "") == "claude-review") | (.conclusion // "PENDING")] | first // "MISSING"')
+            [ "$review_state" = "SUCCESS" ] || { decline "$pr" "claude-review is ${review_state}"; continue; }
+
+            # Protected paths. Read, never executed: nothing here runs code from the
+            # pull request. `.github/` is on the list for a second reason: claude-review
+            # passes green *without reviewing* a pull request that edits workflows.
+            git fetch --quiet origin "pull/${pr}/head:automerge-pr-${pr}"
+            base=$(git merge-base "origin/${DEFAULT_BRANCH}" "automerge-pr-${pr}")
+            hit=""
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              for prefix in $PROTECTED_PATHS; do
+                case "$file" in "$prefix"*) hit="${hit}${file} " ;; esac
+              done
+            done < <(git diff --name-only "$base" "automerge-pr-${pr}")
+            if [ -n "$hit" ]; then decline "$pr" "changes a protected path: ${hit}"; continue; fi
+
+            echo "PR #${pr} passes every gate at ${head_sha}; squash-merging."
+            gh pr merge "$pr" --squash --delete-branch --match-head-commit "$head_sha" \
+              || decline "$pr" "gh pr merge refused (another run may have merged it, or the head moved)"
+          done
+        shell: bash

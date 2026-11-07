@@ -1,0 +1,37 @@
+# Checks the pipeline's own invariants: the workflow properties, the trust boundary,
+# the resume rules and the report tail. No secrets, no model calls, about a minute.
+#
+# Keep it when you adopt the template: it is what fails when an edit to a claude-*
+# workflow quietly removes a guard (docs/PIPELINE.md § Failure modes we hit).
+name: template-selftest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the test dependencies
+        run: python -m pip install -r .github/claude/requirements-selftest.txt
+
+      - name: Run the pipeline's tests
+        run: python -m pytest -q tests/test_claude_pipeline_*.py
+
+      - name: Shellcheck the pipeline's scripts
+        # shellcheck is preinstalled on GitHub's Ubuntu runners.
+        run: shellcheck .github/claude/*.sh

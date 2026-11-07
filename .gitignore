@@ -1,0 +1,9 @@
+# Loaded by claude-code-action from the checkout it runs on, and it carries
+# `permissions.allow`: a committed one would let a pull request widen the tool
+# allowance of the job reviewing it. tests/test_claude_pipeline_trust_boundary.py
+# fails if it is ever tracked. See docs/PIPELINE.md § The trust boundary.
+.claude/settings.local.json
+
+__pycache__/
+.pytest_cache/
+*.pyc

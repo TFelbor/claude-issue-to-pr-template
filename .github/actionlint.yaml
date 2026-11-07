@@ -1,0 +1,8 @@
+# actionlint configuration. SC2016 ("expressions don't expand in single quotes") fires on
+# every Markdown backtick in the comments the workflows post; those are meant literally.
+# A `# shellcheck disable` line cannot cover a whole `run:` block under actionlint,
+# because actionlint wraps the script before handing it to shellcheck.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'SC2016'
