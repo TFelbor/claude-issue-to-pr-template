@@ -123,6 +123,6 @@ and `python -m pytest -q tests/test_claude_pipeline_*.py` (the report tests also
 
 ## Origin and licence
 
-Extracted from Daedal Studio (2026), a closed startup whose full codebase is archived at https://github.com/TFelbor/daedal-studio; see the write-up at {{SUBSTACK_URL}}.
+Extracted from Daedal Studio (2026), a closed startup whose full codebase is archived at https://github.com/TFelbor/daedal-studio; see the write-up at https://substack.com/@tytusfelbor.
 
 Apache-2.0; see `LICENSE` and `NOTICE`.
